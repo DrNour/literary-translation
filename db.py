@@ -269,6 +269,19 @@ def get_or_create_learner(
     clean_name = full_name.strip()
     clean_student_id = student_id.strip()
     with connect(db_path) as connection:
+        existing = connection.execute(
+            "SELECT id, student_id FROM learners WHERE pseudonym = ?",
+            (clean,),
+        ).fetchone()
+        if existing and existing["student_id"] and clean_student_id and existing["student_id"] != clean_student_id:
+            raise ValueError("This research ID is already linked to a different Student ID.")
+        if clean_student_id:
+            conflict = connection.execute(
+                "SELECT pseudonym FROM learners WHERE student_id = ? AND pseudonym <> ?",
+                (clean_student_id, clean),
+            ).fetchone()
+            if conflict:
+                raise ValueError("This Student ID is already linked to a different research ID.")
         connection.execute(
             """
             INSERT OR IGNORE INTO learners (pseudonym, full_name, student_id, created_at)

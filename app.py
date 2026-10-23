@@ -227,12 +227,16 @@ def _authenticated_sidebar() -> tuple[str, int | None, bool]:
         if not full_name.strip() or not student_id.strip() or not pseudonym.strip():
             st.sidebar.warning("Enter your name, Student ID, and assigned research ID to enter the student workspace.")
             return role, None, False
-        learner_id = get_or_create_learner(
-            pseudonym,
-            DB_PATH,
-            full_name=full_name,
-            student_id=student_id,
-        )
+        try:
+            learner_id = get_or_create_learner(
+                pseudonym,
+                DB_PATH,
+                full_name=full_name,
+                student_id=student_id,
+            )
+        except ValueError as exc:
+            st.sidebar.error(str(exc))
+            return role, None, False
         st.sidebar.caption("Your name and Student ID are visible to the instructor; research exports use the pseudonymous ID.")
         return role, learner_id, True
 
