@@ -25,12 +25,24 @@ def make_submission_docx(submission: dict[str, Any], *, db_path: str | None = No
     document.add_paragraph(f"Text: {submission.get('title', '')}")
     document.add_paragraph(f"Author: {submission.get('author', '')}")
     document.add_paragraph(f"Language direction: {submission.get('direction', '')}")
+    document.add_paragraph(f"Workflow: {submission.get('workflow_mode', 'Original translation')}")
     document.add_paragraph(f"Student ID: {submission.get('pseudonym', '')}")
 
     document.add_heading("Source text", level=2)
     document.add_paragraph(submission.get("source_text", ""))
     document.add_heading("Unaided draft", level=2)
     document.add_paragraph(submission.get("draft", ""))
+    if submission.get("machine_translation"):
+        document.add_heading("Machine-translation draft", level=2)
+        document.add_paragraph(submission.get("machine_translation", ""))
+    if submission.get("post_edit_translation"):
+        document.add_heading("Post-edited translation", level=2)
+        document.add_paragraph(submission.get("post_edit_translation", ""))
+    if submission.get("text_reference_translation") or submission.get("reference_translation"):
+        document.add_heading("Reference translation", level=2)
+        document.add_paragraph(
+            submission.get("text_reference_translation") or submission.get("reference_translation") or ""
+        )
     document.add_heading("Final translation", level=2)
     document.add_paragraph(submission.get("final_translation", ""))
     document.add_heading("Translator's commentary", level=2)
@@ -43,7 +55,9 @@ def make_submission_docx(submission: dict[str, Any], *, db_path: str | None = No
         tags = []
     document.add_paragraph("Strategy tags: " + ", ".join(tags))
 
-    metrics = diff_metrics(submission.get("draft", ""), submission.get("final_translation", ""))
+    baseline = submission.get("machine_translation") or submission.get("draft", "")
+    revised = submission.get("post_edit_translation") or submission.get("final_translation", "")
+    metrics = diff_metrics(baseline, revised)
     document.add_heading("Revision metrics", level=2)
     for key, value in metrics.items():
         document.add_paragraph(f"{key}: {value}")

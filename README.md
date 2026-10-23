@@ -12,10 +12,15 @@ The course corpus is built around identifiable authentic literary texts. The inc
 - Authentic Text Library with filters for week, language, genre, difficulty, author, themes, and direction.
 - Single-text and bulk-CSV import with provenance and rights fields.
 - Student close-reading annotations and translation-strategy tags.
+- A dedicated Translation Studio for original student translation.
+- A dedicated Post-editing Lab with an MT baseline, post-edited version, edit operations, and time-on-task.
+- A dedicated AI Translation Lab with locked student drafts and three AI alternatives.
+- Optional AI-generated MT baselines or instructor-provided MT outputs.
 - Locked unaided first draft before AI comparison.
 - Three optional comparison modes: meaning-focused, style-focused, and creative alternative.
 - Side-by-side source, draft, AI, and final-translation workflow.
 - Revision metrics, elapsed workflow time, edit rate, similarity, and AI-uptake logging.
+- Source–MT–post-edit–reference workflow comparisons.
 - Translator's commentary and reflective practice.
 - Anonymised peer review and instructor/expert rubric assessment.
 - Exploratory sentiment and emotion comparison across versions.

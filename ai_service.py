@@ -83,6 +83,64 @@ def _demo_suggestion(draft: str, mode: str) -> str:
     )
 
 
+def generate_machine_translation(source_text: str, direction: str) -> dict[str, str]:
+    """Create an optional MT/AI baseline for a post-editing task.
+
+    In classroom deployment, instructors can also paste an MT output produced by
+    their approved system. The offline fallback is intentionally labelled and
+    is not presented as a genuine machine-translation result.
+    """
+
+    if not api_is_configured():
+        return {
+            "text": "[Offline demo MT baseline — paste an approved MT output or configure OPENAI_API_KEY]\n\n"
+            + source_text,
+            "model": "offline-demo",
+            "provider": "Offline demo",
+        }
+    from openai import OpenAI
+
+    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    system = (
+        "You are producing a machine-translation baseline for a post-editing exercise. "
+        "Translate the source faithfully and do not add commentary. The student will revise the output."
+    )
+    user = f"Translate this literary source from {direction}. Return only the draft translation.\n\n{source_text}"
+    model = configured_model()
+    try:
+        if hasattr(client, "responses"):
+            response = client.responses.create(
+                model=model,
+                input=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                store=False,
+            )
+            output = getattr(response, "output_text", None)
+            if output:
+                return {"text": output.strip(), "model": model, "provider": "OpenAI (store=False)"}
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.2,
+        )
+        return {
+            "text": response.choices[0].message.content.strip(),
+            "model": model,
+            "provider": "OpenAI",
+        }
+    except Exception as exc:  # pragma: no cover - depends on external credentials/network
+        return {
+            "text": "[Offline fallback after AI baseline error]\n\n" + source_text,
+            "model": "offline-demo",
+            "provider": f"Offline fallback: {type(exc).__name__}",
+        }
+
+
 def generate_suggestions(source_text: str, draft: str, direction: str) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for mode in MODE_INSTRUCTIONS:

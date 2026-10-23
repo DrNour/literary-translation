@@ -6,6 +6,7 @@ from db import (
     init_db,
     list_texts,
     lock_draft,
+    save_post_edit,
     save_final,
     seed_database,
 )
@@ -34,6 +35,31 @@ def test_locked_workflow_preserves_draft_and_accepts_final(tmp_path: Path) -> No
     assert submission["draft"] == "unaided draft"
     assert submission["final_translation"] == "final translation"
     assert submission["status"] == "submitted"
+
+
+def test_translation_and_post_editing_are_separate_workflows(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "test.db")
+    init_db(db_path)
+    seed_database(db_path)
+    learner_id = get_or_create_learner("workflow-student", db_path)
+    text_id = list_texts(db_path=db_path)[0]["id"]
+    translation_id = lock_draft(learner_id, text_id, "my translation", db_path, workflow_mode="Original translation")
+    post_edit_id = lock_draft(
+        learner_id,
+        text_id,
+        "machine baseline",
+        db_path,
+        workflow_mode="Post-editing",
+        machine_translation="machine baseline",
+    )
+    assert translation_id != post_edit_id
+    save_post_edit(post_edit_id, "post-edited version", "commentary", ["voice"], submit=True, db_path=db_path)
+    from db import get_submission
+
+    post_edit = get_submission(learner_id, text_id, db_path, workflow_mode="Post-editing")
+    assert post_edit["machine_translation"] == "machine baseline"
+    assert post_edit["post_edit_translation"] == "post-edited version"
+    assert post_edit["status"] == "submitted"
 
 
 def test_analytics_are_transparent_and_deterministic() -> None:

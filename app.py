@@ -22,7 +22,7 @@ import pandas as pd
 import streamlit as st
 from docx import Document
 
-from ai_service import api_is_configured, generate_suggestions
+from ai_service import api_is_configured, generate_machine_translation, generate_suggestions
 from analysis_utils import (
     diff_metrics,
     elapsed_minutes,
@@ -51,6 +51,7 @@ from db import (
     log_event,
     mark_ai_suggestion_used,
     save_final,
+    save_post_edit,
     save_peer_review,
     save_teacher_review,
     save_unlocked_draft,
@@ -161,6 +162,8 @@ def _sidebar_navigation(role: str) -> str:
             "Course Home",
             "Authentic Text Library",
             "Translation Studio",
+            "Post-editing Lab",
+            "AI Translation Lab",
             "Peer Review",
             "My Progress",
         ]
@@ -296,8 +299,17 @@ def render_annotation_panel(submission_id: int) -> None:
         st.caption("No annotations have been saved yet.")
 
 
-def render_translation_studio(learner_id: int) -> None:
-    st.header("Translation Studio")
+def render_translation_studio(learner_id: int, workflow_mode: str = "Original translation") -> None:
+    page_title = "AI Translation Lab" if workflow_mode == "AI-assisted translation" else "Translation Studio"
+    st.header(page_title)
+    if workflow_mode == "AI-assisted translation":
+        st.info(
+            "This is an explicit AI-assisted translation activity: write and lock your own draft first, then ask AI for literary alternatives and document how you use them."
+        )
+    else:
+        st.info(
+            "This is the original-translation activity: translate the authentic source independently before optional comparison or feedback."
+        )
     texts = list_texts(db_path=DB_PATH)
     if not texts:
         st.warning("The text library is empty. Ask an instructor to import authentic texts.")
@@ -321,10 +333,10 @@ def render_translation_studio(learner_id: int) -> None:
         st.markdown(f"[View provenance/source record]({text_item['source_url']})")
     st.text_area("Authentic source text", text_item["text"], height=250, disabled=True, key=f"source_{text_id}")
 
-    submission = get_submission(learner_id, text_id, DB_PATH)
+    submission = get_submission(learner_id, text_id, DB_PATH, workflow_mode=workflow_mode)
     locked = bool(submission and submission.get("locked_at"))
     if not locked:
-        st.subheader("Stage 1 — Unaided first draft")
+        st.subheader("Stage 1 — Student translation before AI assistance")
         st.info(
             "Complete and save your own translation before using AI comparison tools. Once locked, the first draft is preserved for learning analytics."
         )
@@ -337,7 +349,7 @@ def render_translation_studio(learner_id: int) -> None:
         )
         save_col, lock_col = st.columns(2)
         if save_col.button("Save working draft", key=f"save_draft_{text_id}"):
-            submission_id = save_unlocked_draft(learner_id, text_id, draft, DB_PATH)
+            submission_id = save_unlocked_draft(learner_id, text_id, draft, DB_PATH, workflow_mode=workflow_mode)
             log_event("draft_saved", learner_id=learner_id, submission_id=submission_id, payload={"word_count": word_count(draft)}, db_path=DB_PATH)
             st.success("Working draft saved.")
             st.rerun()
@@ -345,7 +357,7 @@ def render_translation_studio(learner_id: int) -> None:
             if not draft.strip():
                 st.warning("Write a draft before locking it.")
             else:
-                submission_id = lock_draft(learner_id, text_id, draft, DB_PATH)
+                submission_id = lock_draft(learner_id, text_id, draft, DB_PATH, workflow_mode=workflow_mode)
                 log_event("draft_locked", learner_id=learner_id, submission_id=submission_id, payload={"word_count": word_count(draft)}, db_path=DB_PATH)
                 st.success("Unaided draft locked. The comparison stage is now available.")
                 st.rerun()
@@ -354,7 +366,7 @@ def render_translation_studio(learner_id: int) -> None:
         return
 
     submission_id = int(submission["id"])
-    st.success("Unaided draft locked. You may now compare alternatives and prepare your final translation.")
+    st.success("Student draft locked. AI comparison and final-translation tools are now available.")
     draft = submission["draft"]
     st.text_area("Locked unaided draft", draft, height=200, disabled=True, key=f"locked_draft_{text_id}")
 
@@ -481,6 +493,155 @@ def db_save_ai_suggestion(submission_id: int, result: dict[str, Any]) -> int:
     return save_ai_suggestion(submission_id, result["mode"], result["suggestion"], result["model"], DB_PATH)
 
 
+def render_post_editing_lab(learner_id: int) -> None:
+    st.header("Post-editing Lab")
+    st.info(
+        "This activity gives you a machine-translation baseline and asks you to post-edit it against the authentic source. "
+        "Your MT baseline, post-edited version, edit operations, and time-on-task are recorded separately."
+    )
+    texts = list_texts(db_path=DB_PATH)
+    if not texts:
+        st.warning("The authentic text library is empty.")
+        return
+    labels = [_text_label(item) for item in texts]
+    ids = [item["id"] for item in texts]
+    selected_id = st.session_state.get("postedit_text_id", ids[0])
+    index = ids.index(selected_id) if selected_id in ids else 0
+    selected_label = st.selectbox("Select an authentic source text", labels, index=index, key="postedit_text_select")
+    text_item = texts[labels.index(selected_label)]
+    text_id = text_item["id"]
+    st.session_state["postedit_text_id"] = text_id
+    st.markdown(f"**{text_item['title']}** — {text_item['author']} ({text_item['direction']})")
+    st.text_area("Authentic source text", text_item["text"], height=220, disabled=True, key=f"postedit_source_{text_id}")
+
+    workflow_mode = "Post-editing"
+    submission = get_submission(learner_id, text_id, DB_PATH, workflow_mode=workflow_mode)
+    locked = bool(submission and submission.get("locked_at"))
+    if not locked:
+        st.subheader("Stage 1 — Obtain and lock the MT baseline")
+        st.write("Use an instructor-provided MT output, paste one from an approved system, or generate an optional baseline for demonstration.")
+        if st.button("Generate MT baseline with AI", key=f"generate_mt_{text_id}"):
+            with st.spinner("Generating a machine-translation baseline..."):
+                result = generate_machine_translation(text_item["text"], text_item["direction"])
+            submission_id = save_unlocked_draft(
+                learner_id,
+                text_id,
+                result["text"],
+                DB_PATH,
+                workflow_mode=workflow_mode,
+                machine_translation=result["text"],
+            )
+            log_event(
+                "mt_baseline_generated",
+                learner_id=learner_id,
+                submission_id=submission_id,
+                payload={"model": result["model"], "provider": result["provider"]},
+                db_path=DB_PATH,
+            )
+            st.rerun()
+        mt_value = submission.get("machine_translation", "") if submission else ""
+        mt_draft = st.text_area(
+            "Machine-translation draft",
+            value=mt_value,
+            height=220,
+            key=f"mt_editor_{text_id}",
+            help="Paste the MT output supplied by your instructor or approved translation system.",
+        )
+        if st.button("Lock MT baseline and begin post-editing", type="primary", key=f"lock_mt_{text_id}"):
+            if not mt_draft.strip():
+                st.warning("Add or generate a machine-translation draft first.")
+            else:
+                submission_id = lock_draft(
+                    learner_id,
+                    text_id,
+                    mt_draft,
+                    DB_PATH,
+                    workflow_mode=workflow_mode,
+                    machine_translation=mt_draft,
+                )
+                log_event(
+                    "mt_baseline_locked",
+                    learner_id=learner_id,
+                    submission_id=submission_id,
+                    payload={"word_count": word_count(mt_draft)},
+                    db_path=DB_PATH,
+                )
+                st.success("MT baseline locked. You can now post-edit it.")
+                st.rerun()
+        return
+
+    submission_id = int(submission["id"])
+    mt_draft = submission.get("machine_translation") or submission.get("draft", "")
+    st.success("MT baseline locked. The editable post-edit field is now active.")
+    st.text_area("Locked MT baseline", mt_draft, height=200, disabled=True, key=f"locked_mt_{submission_id}")
+    post_edit = st.text_area(
+        "Your post-edited translation",
+        value=submission.get("post_edit_translation") or submission.get("final_translation", ""),
+        height=240,
+        key=f"post_edit_editor_{submission_id}",
+    )
+    commentary = st.text_area(
+        "Post-editing commentary",
+        value=submission.get("commentary", ""),
+        height=150,
+        placeholder="Identify the MT problems you corrected and explain important literary or cultural decisions.",
+        key=f"post_edit_commentary_{submission_id}",
+    )
+    tags = st.multiselect(
+        "Post-editing strategies",
+        STRATEGY_TAGS,
+        default=[tag for tag in _parse_tags(submission.get("strategy_tags")) if tag in STRATEGY_TAGS],
+        key=f"post_edit_tags_{submission_id}",
+    )
+    save_col, submit_col = st.columns(2)
+    if save_col.button("Save post-edit", key=f"save_post_edit_{submission_id}"):
+        save_post_edit(submission_id, post_edit, commentary, tags, db_path=DB_PATH)
+        log_event("post_edit_saved", learner_id=learner_id, submission_id=submission_id, db_path=DB_PATH)
+        st.success("Post-edit saved.")
+        st.rerun()
+    if submit_col.button("Submit post-edited translation", type="primary", key=f"submit_post_edit_{submission_id}"):
+        if not post_edit.strip() or not commentary.strip():
+            st.warning("Add both a post-edited translation and commentary before submitting.")
+        else:
+            save_post_edit(submission_id, post_edit, commentary, tags, submit=True, db_path=DB_PATH)
+            log_event(
+                "post_edit_submitted",
+                learner_id=learner_id,
+                submission_id=submission_id,
+                payload={"word_count": word_count(post_edit)},
+                db_path=DB_PATH,
+            )
+            st.success("Post-edited translation submitted.")
+            st.rerun()
+
+    metrics = diff_metrics(mt_draft, post_edit)
+    metric_cols = st.columns(5)
+    metric_cols[0].metric("MT words", word_count(mt_draft))
+    metric_cols[1].metric("Post-edit words", word_count(post_edit))
+    metric_cols[2].metric("Insertions", metrics["added_tokens"])
+    metric_cols[3].metric("Deletions", metrics["removed_tokens"])
+    metric_cols[4].metric("Edit rate", metrics["edit_rate"])
+    if submission.get("final_submitted_at"):
+        st.caption(f"Post-editing time-on-task: {elapsed_minutes(submission.get('started_at'), submission.get('final_submitted_at'))} minutes")
+
+    versions = {"Source": text_item["text"], "MT baseline": mt_draft, "Post-edited": post_edit}
+    if text_item.get("reference_translation"):
+        versions["Reference"] = text_item["reference_translation"]
+    st.subheader("Source–MT–post-edit comparison")
+    st.dataframe(sentiment_table(versions), use_container_width=True, hide_index=True)
+    st.caption("Edit rate measures effort-related change; it should not be interpreted as translation quality by itself.")
+    render_annotation_panel(submission_id)
+    export_submission = dict(submission)
+    export_submission["text_reference_translation"] = text_item.get("reference_translation", "")
+    st.download_button(
+        "Download post-edit record as Word",
+        data=make_submission_docx(export_submission, db_path=DB_PATH),
+        file_name=f"post_edit_submission_{submission_id}.docx",
+        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        key=f"download_post_edit_{submission_id}",
+    )
+
+
 def render_peer_review(learner_id: int) -> None:
     st.header("Peer Review Workshop")
     submissions = [row for row in list_all_submissions(status="submitted", db_path=DB_PATH) if row["learner_id"] != learner_id]
@@ -520,13 +681,16 @@ def render_my_progress(learner_id: int) -> None:
         return
     rows = []
     for item in submissions:
-        metrics = diff_metrics(item["draft"], item.get("final_translation", ""))
+        baseline = item.get("machine_translation") or item["draft"]
+        outcome = item.get("post_edit_translation") or item.get("final_translation", "")
+        metrics = diff_metrics(baseline, outcome)
         events = list_events(item["id"], DB_PATH)
         uptake = sum(1 for event in events if event["event_type"] == "ai_suggestion_uptake_changed" and '"used": true' in event["payload_json"])
         rows.append(
             {
                 "week": item.get("week"),
                 "text": item["title"],
+                "workflow": item.get("workflow_mode", "Original translation"),
                 "status": item["status"],
                 "direction": item["direction"],
                 "draft words": word_count(item["draft"]),
@@ -554,13 +718,16 @@ def render_instructor_dashboard() -> None:
         return
     rows = []
     for item in submissions:
-        metrics = diff_metrics(item["draft"], item.get("final_translation", ""))
+        baseline = item.get("machine_translation") or item["draft"]
+        outcome = item.get("post_edit_translation") or item.get("final_translation", "")
+        metrics = diff_metrics(baseline, outcome)
         rows.append(
             {
                 "submission": item["id"],
                 "student": item["pseudonym"],
                 "week": item.get("week"),
                 "text": item["title"],
+                "workflow": item.get("workflow_mode", "Original translation"),
                 "status": item["status"],
                 "direction": item["direction"],
                 "edit rate": metrics["edit_rate"],
@@ -596,6 +763,11 @@ def render_text_importer() -> None:
             themes = st.text_input("Themes or translation challenges")
             rights = st.text_input("Rights/provenance note", value="Instructor-provided authorised excerpt")
             source_url = st.text_input("Source or bibliographic URL")
+            reference_translation = st.text_area(
+                "Reference translation (optional)",
+                height=120,
+                help="Use only an authorised reference translation. It is kept separate from the student's work for comparison.",
+            )
             text_upload = st.file_uploader("Upload .txt or .docx (optional)", type=["txt", "docx"])
             text_body = st.text_area("Authentic text or excerpt", height=220)
             submitted = st.form_submit_button("Add to authentic library")
@@ -618,6 +790,7 @@ def render_text_importer() -> None:
                             "rights": rights,
                             "source_url": source_url,
                             "text": content,
+                            "reference_translation": reference_translation,
                             "is_authentic": True,
                         },
                         uploaded_by="instructor",
@@ -625,7 +798,7 @@ def render_text_importer() -> None:
                     )
                     st.success(f"Text record #{text_id} added or updated.")
     with bulk_tab:
-        st.write("CSV columns: `title, author, year, language, direction, genre, week, difficulty, themes, rights, source_url, text`.")
+        st.write("CSV columns: `title, author, year, language, direction, genre, week, difficulty, themes, rights, source_url, text, reference_translation`.")
         csv_upload = st.file_uploader("Upload CSV", type=["csv"], key="bulk_text_csv")
         if csv_upload is not None:
             try:
@@ -663,8 +836,15 @@ def render_assessment() -> None:
         st.info("No submitted translations are available for assessment.")
         return
     st.caption(f"Blinded workflow record: Submission #{submission['id']}")
-    st.markdown(f"**Source:** {submission['title']} — {submission['author']} ({submission['direction']})")
+    st.markdown(
+        f"**Source:** {submission['title']} — {submission['author']} ({submission['direction']})  \n"
+        f"**Workflow:** {submission.get('workflow_mode', 'Original translation')}"
+    )
     st.text_area("Source text", submission["source_text"], height=160, disabled=True, key=f"assessment_source_{submission['id']}")
+    if submission.get("machine_translation"):
+        st.text_area("Machine-translation baseline", submission["machine_translation"], height=160, disabled=True, key=f"assessment_mt_{submission['id']}")
+    if submission.get("post_edit_translation"):
+        st.text_area("Post-edited translation", submission["post_edit_translation"], height=180, disabled=True, key=f"assessment_postedit_{submission['id']}")
     st.text_area("Student final translation", submission["final_translation"], height=200, disabled=True, key=f"assessment_final_{submission['id']}")
     st.text_area("Translator's commentary", submission["commentary"], height=150, disabled=True, key=f"assessment_commentary_{submission['id']}")
     with st.form(f"teacher_review_form_{submission['id']}"):
@@ -707,7 +887,9 @@ def _research_frame() -> pd.DataFrame:
     submissions = list_all_submissions(db_path=DB_PATH)
     rows = []
     for item in submissions:
-        metrics = diff_metrics(item["draft"], item.get("final_translation", ""))
+        baseline = item.get("machine_translation") or item["draft"]
+        outcome = item.get("post_edit_translation") or item.get("final_translation", "")
+        metrics = diff_metrics(baseline, outcome)
         reviews = list_teacher_reviews(item["id"], DB_PATH)
         ai_rows = list_ai_suggestions(item["id"], DB_PATH)
         rows.append(
@@ -716,9 +898,12 @@ def _research_frame() -> pd.DataFrame:
                 "pseudonym": item["pseudonym"],
                 "week": item.get("week"),
                 "text": item["title"],
+                "workflow": item.get("workflow_mode", "Original translation"),
                 "status": item["status"],
                 "direction": item["direction"],
                 "draft words": word_count(item["draft"]),
+                "MT words": word_count(item.get("machine_translation", "")),
+                "post-edit words": word_count(item.get("post_edit_translation", "")),
                 "final words": word_count(item.get("final_translation", "")),
                 "edit rate": metrics["edit_rate"],
                 "similarity": metrics["similarity"],
@@ -754,7 +939,17 @@ def render_research_dashboard() -> None:
     submissions = list_all_submissions(status="submitted", db_path=DB_PATH)
     selected = _submission_selector(submissions, "research_submission")
     if selected:
-        versions = {"Source": selected["source_text"], "Unaided draft": selected["draft"], "Final": selected["final_translation"]}
+        versions = {"Source": selected["source_text"]}
+        if selected.get("machine_translation"):
+            versions["MT baseline"] = selected["machine_translation"]
+        if selected.get("draft"):
+            versions["Student draft"] = selected["draft"]
+        if selected.get("post_edit_translation"):
+            versions["Post-edited"] = selected["post_edit_translation"]
+        if selected.get("final_translation"):
+            versions["Final"] = selected["final_translation"]
+        if selected.get("text_reference_translation"):
+            versions["Reference"] = selected["text_reference_translation"]
         st.subheader("Version comparison")
         st.dataframe(sentiment_table(versions), use_container_width=True, hide_index=True)
 
@@ -815,6 +1010,10 @@ def main() -> None:
             render_text_library(role, learner_id)
         elif page == "Translation Studio":
             render_translation_studio(learner_id)
+        elif page == "Post-editing Lab":
+            render_post_editing_lab(learner_id)
+        elif page == "AI Translation Lab":
+            render_translation_studio(learner_id, workflow_mode="AI-assisted translation")
         elif page == "Peer Review":
             render_peer_review(learner_id)
         elif page == "My Progress":
