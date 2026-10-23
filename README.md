@@ -26,6 +26,7 @@ The course corpus is built around identifiable authentic literary texts. The inc
 - Exploratory sentiment and emotion comparison across versions.
 - ICC(2,1) estimate when enough blinded expert ratings are available.
 - Word export for individual submissions and ZIP/CSV research export for the full dataset.
+- Instructor-only student roster with student names and institutional IDs; research views and exports retain only pseudonymous study IDs.
 - Offline demo mode when no `OPENAI_API_KEY` is configured.
 
 ## Run locally
@@ -57,7 +58,7 @@ The seed texts are short excerpts selected from public-domain or traditional wor
 
 ## Research use
 
-The application is designed to support human-in-the-loop research, but its exploratory sentiment lexicon and classroom analytics are not substitutes for a validated annotation protocol. Before collecting research data, configure pseudonymous IDs, obtain consent, and follow institutional ethics and data-protection requirements.
+The application is designed to support human-in-the-loop research, but its exploratory sentiment lexicon and classroom analytics are not substitutes for a validated annotation protocol. Instructors can view names and institutional IDs in the protected instructor workspace; research dashboards and ZIP exports exclude those fields and use pseudonymous IDs. Before collecting research data, configure pseudonymous IDs, obtain consent, and follow institutional ethics and data-protection requirements.
 
 ## Tests
 

@@ -5,6 +5,7 @@ from db import (
     get_or_create_learner,
     init_db,
     list_texts,
+    list_learners,
     lock_draft,
     save_post_edit,
     save_final,
@@ -35,6 +36,22 @@ def test_locked_workflow_preserves_draft_and_accepts_final(tmp_path: Path) -> No
     assert submission["draft"] == "unaided draft"
     assert submission["final_translation"] == "final translation"
     assert submission["status"] == "submitted"
+
+
+def test_instructor_roster_preserves_name_and_student_id(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "test.db")
+    init_db(db_path)
+    learner_id = get_or_create_learner(
+        "study-p001",
+        db_path,
+        full_name="Student Example",
+        student_id="UAEU-001",
+    )
+    roster = list_learners(db_path)
+    learner = next(row for row in roster if row["id"] == learner_id)
+    assert learner["full_name"] == "Student Example"
+    assert learner["student_id"] == "UAEU-001"
+    assert learner["pseudonym"] == "study-p001"
 
 
 def test_translation_and_post_editing_are_separate_workflows(tmp_path: Path) -> None:

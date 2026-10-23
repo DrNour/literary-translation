@@ -26,7 +26,7 @@ def make_submission_docx(submission: dict[str, Any], *, db_path: str | None = No
     document.add_paragraph(f"Author: {submission.get('author', '')}")
     document.add_paragraph(f"Language direction: {submission.get('direction', '')}")
     document.add_paragraph(f"Workflow: {submission.get('workflow_mode', 'Original translation')}")
-    document.add_paragraph(f"Student ID: {submission.get('pseudonym', '')}")
+    document.add_paragraph(f"Research ID: {submission.get('pseudonym', '')}")
 
     document.add_heading("Source text", level=2)
     document.add_paragraph(submission.get("source_text", ""))
@@ -113,11 +113,17 @@ def make_research_zip(db_path: str | None = None) -> bytes:
     output = io.BytesIO()
     with zipfile.ZipFile(output, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
         for table in tables:
-            archive.writestr(f"{table}.csv", _csv_bytes(export_rows(table, db_path)))
+            rows = export_rows(table, db_path)
+            if table == "learners":
+                rows = [
+                    {key: value for key, value in row.items() if key not in {"full_name", "student_id"}}
+                    for row in rows
+                ]
+            archive.writestr(f"{table}.csv", _csv_bytes(rows))
         archive.writestr("data_dictionary.csv", dictionary.to_csv(index=False).encode("utf-8-sig"))
         archive.writestr(
             "README.txt",
-            "Exports are pseudonymised at the application level. Review consent, ethics, and local data-protection requirements before research use.\n",
+            "Exports are pseudonymised at the application level; student names and institutional IDs are excluded. Review consent, ethics, and local data-protection requirements before research use.\n",
         )
     return output.getvalue()
 

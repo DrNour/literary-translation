@@ -43,6 +43,7 @@ from db import (
     list_all_submissions,
     list_annotations,
     list_events,
+    list_learners,
     list_peer_reviews,
     list_student_submissions,
     list_teacher_reviews,
@@ -97,10 +98,45 @@ def apply_style() -> None:
     st.markdown(
         """
         <style>
-        .main-title {font-size: 2.3rem; font-weight: 700; margin-bottom: 0.1rem;}
-        .subtitle {color: #566573; margin-bottom: 1.3rem;}
+        :root {color-scheme: light;}
+        .main-title {font-size: 2.3rem; font-weight: 700; color: #102a43; margin-bottom: 0.1rem;}
+        .subtitle {color: #243b53; margin-bottom: 1.3rem;}
         .authentic-badge {background: #e8f5e9; color: #1b5e20; padding: 0.25rem 0.55rem; border-radius: 0.4rem; font-size: 0.82rem;}
         .source-card {border-left: 4px solid #2e7d32; padding-left: 0.8rem;}
+        [data-testid="stAppViewContainer"] p,
+        [data-testid="stAppViewContainer"] label,
+        [data-testid="stAppViewContainer"] li,
+        [data-testid="stSidebar"] p,
+        [data-testid="stSidebar"] label,
+        [data-testid="stSidebar"] li,
+        [data-testid="stMarkdownContainer"] {
+            color: #172b4d !important;
+        }
+        [data-testid="stCaptionContainer"] p {
+            color: #334e68 !important;
+            font-size: 0.9rem;
+        }
+        [data-testid="stAppViewContainer"] h1,
+        [data-testid="stAppViewContainer"] h2,
+        [data-testid="stAppViewContainer"] h3,
+        [data-testid="stSidebar"] h1,
+        [data-testid="stSidebar"] h2,
+        [data-testid="stSidebar"] h3 {
+            color: #102a43 !important;
+        }
+        input, textarea {
+            color: #102a43 !important;
+            background-color: #ffffff !important;
+            border-color: #829ab1 !important;
+        }
+        textarea:disabled, input:disabled {
+            color: #172b4d !important;
+            -webkit-text-fill-color: #172b4d !important;
+            opacity: 1 !important;
+        }
+        button, [data-baseweb="select"] * {
+            color: #102a43 !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -135,15 +171,69 @@ def _text_label(item: dict[str, Any]) -> str:
     return f"{week} · {item['title']} — {item['author']} ({item['language']})"
 
 
+def _is_arabic(language: str | None) -> bool:
+    return "arab" in (language or "").lower()
+
+
+def _target_language(direction: str | None) -> str:
+    if direction and "→" in direction:
+        return direction.split("→", 1)[1].strip()
+    return "English"
+
+
+def _localized_text_area(
+    label: str,
+    value: str = "",
+    *,
+    language: str | None = None,
+    **kwargs: Any,
+) -> str:
+    """Render a text area with direction and full-justification for its language."""
+
+    direction = "rtl" if _is_arabic(language) else "ltr"
+    alignment = "right" if direction == "rtl" else "left"
+    selector_label = label.replace("\\", "\\\\").replace('"', '\\"')
+    st.markdown(
+        f"""
+        <style>
+        textarea[aria-label="{selector_label}"] {{
+            direction: {direction};
+            text-align: {alignment};
+            text-justify: inter-word;
+            unicode-bidi: plaintext;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    return st.text_area(label, value=value, **kwargs)
+
+
 def _authenticated_sidebar() -> tuple[str, int | None, bool]:
     st.sidebar.markdown("## Literary Translation Studio")
     st.sidebar.caption("Authentic-text teaching, translation practice, and research analytics")
     role = st.sidebar.radio("Workspace", ["Student", "Instructor", "Research"], key="role")
 
     if role == "Student":
-        pseudonym = st.sidebar.text_input("Pseudonymous student ID", value="student-001", key="pseudonym")
-        learner_id = get_or_create_learner(pseudonym, DB_PATH)
-        st.sidebar.caption("Use a pseudonym rather than a personal name for research-mode data.")
+        full_name = st.sidebar.text_input("Student name", key="student_name")
+        student_id = st.sidebar.text_input("Student ID", key="institutional_student_id")
+        pseudonym = st.sidebar.text_input(
+            "Pseudonymous research ID",
+            value="",
+            key="pseudonym",
+            placeholder="e.g., P001",
+            help="Use the unique study ID assigned for this course. It is used in research tables and exports instead of your name or institutional ID.",
+        )
+        if not full_name.strip() or not student_id.strip() or not pseudonym.strip():
+            st.sidebar.warning("Enter your name, Student ID, and assigned research ID to enter the student workspace.")
+            return role, None, False
+        learner_id = get_or_create_learner(
+            pseudonym,
+            DB_PATH,
+            full_name=full_name,
+            student_id=student_id,
+        )
+        st.sidebar.caption("Your name and Student ID are visible to the instructor; research exports use the pseudonymous ID.")
         return role, learner_id, True
 
     password = st.sidebar.text_input("Workspace password", type="password", key="workspace_password")
@@ -263,9 +353,10 @@ def render_text_library(role: str, learner_id: int | None = None) -> None:
             metadata_right.markdown(f"**Direction:** {item.get('direction') or '—'}")
             if item.get("source_url"):
                 metadata_right.markdown(f"[Open source record]({item['source_url']})")
-            st.text_area(
-                "Text excerpt",
+            _localized_text_area(
+                f"Text excerpt ({item['language']})",
                 value=item["text"],
+                language=item["language"],
                 height=170,
                 disabled=True,
                 key=f"library_text_{role}_{item['id']}",
@@ -331,7 +422,14 @@ def render_translation_studio(learner_id: int, workflow_mode: str = "Original tr
     st.markdown(f"**{text_item['title']}** — {text_item['author']} ({text_item.get('year') or 'date unavailable'})")
     if text_item.get("source_url"):
         st.markdown(f"[View provenance/source record]({text_item['source_url']})")
-    st.text_area("Authentic source text", text_item["text"], height=250, disabled=True, key=f"source_{text_id}")
+    _localized_text_area(
+        "Authentic source text",
+        text_item["text"],
+        language=text_item["language"],
+        height=250,
+        disabled=True,
+        key=f"source_{text_id}",
+    )
 
     submission = get_submission(learner_id, text_id, DB_PATH, workflow_mode=workflow_mode)
     locked = bool(submission and submission.get("locked_at"))
@@ -341,9 +439,10 @@ def render_translation_studio(learner_id: int, workflow_mode: str = "Original tr
             "Complete and save your own translation before using AI comparison tools. Once locked, the first draft is preserved for learning analytics."
         )
         draft_value = submission["draft"] if submission else ""
-        draft = st.text_area(
+        draft = _localized_text_area(
             "Your unaided translation",
             value=draft_value,
+            language=_target_language(text_item["direction"]),
             height=250,
             key=f"draft_editor_{text_id}",
         )
@@ -368,7 +467,14 @@ def render_translation_studio(learner_id: int, workflow_mode: str = "Original tr
     submission_id = int(submission["id"])
     st.success("Student draft locked. AI comparison and final-translation tools are now available.")
     draft = submission["draft"]
-    st.text_area("Locked unaided draft", draft, height=200, disabled=True, key=f"locked_draft_{text_id}")
+    _localized_text_area(
+        "Locked unaided draft",
+        draft,
+        language=_target_language(text_item["direction"]),
+        height=200,
+        disabled=True,
+        key=f"locked_draft_{text_id}",
+    )
 
     st.subheader("Stage 2 — AI comparison laboratory")
     st.caption(
@@ -396,9 +502,10 @@ def render_translation_studio(learner_id: int, workflow_mode: str = "Original tr
     suggestions = list_ai_suggestions(submission_id, DB_PATH)
     for suggestion in suggestions:
         with st.expander(f"{suggestion['mode']} · {suggestion['model']}"):
-            st.text_area(
+            _localized_text_area(
                 "Comparison suggestion",
                 suggestion["suggestion"],
+                language=_target_language(text_item["direction"]),
                 height=180,
                 disabled=True,
                 key=f"suggestion_{suggestion['id']}",
@@ -421,9 +528,10 @@ def render_translation_studio(learner_id: int, workflow_mode: str = "Original tr
 
     st.subheader("Stage 3 — Final translation and commentary")
     existing_tags = _parse_tags(submission.get("strategy_tags"))
-    final_translation = st.text_area(
+    final_translation = _localized_text_area(
         "Final translation",
         value=submission.get("final_translation", ""),
+        language=_target_language(text_item["direction"]),
         height=250,
         key=f"final_translation_{submission_id}",
     )
@@ -512,7 +620,14 @@ def render_post_editing_lab(learner_id: int) -> None:
     text_id = text_item["id"]
     st.session_state["postedit_text_id"] = text_id
     st.markdown(f"**{text_item['title']}** — {text_item['author']} ({text_item['direction']})")
-    st.text_area("Authentic source text", text_item["text"], height=220, disabled=True, key=f"postedit_source_{text_id}")
+    _localized_text_area(
+        "Authentic source text",
+        text_item["text"],
+        language=text_item["language"],
+        height=220,
+        disabled=True,
+        key=f"postedit_source_{text_id}",
+    )
 
     workflow_mode = "Post-editing"
     submission = get_submission(learner_id, text_id, DB_PATH, workflow_mode=workflow_mode)
@@ -540,9 +655,10 @@ def render_post_editing_lab(learner_id: int) -> None:
             )
             st.rerun()
         mt_value = submission.get("machine_translation", "") if submission else ""
-        mt_draft = st.text_area(
+        mt_draft = _localized_text_area(
             "Machine-translation draft",
             value=mt_value,
+            language=_target_language(text_item["direction"]),
             height=220,
             key=f"mt_editor_{text_id}",
             help="Paste the MT output supplied by your instructor or approved translation system.",
@@ -573,10 +689,18 @@ def render_post_editing_lab(learner_id: int) -> None:
     submission_id = int(submission["id"])
     mt_draft = submission.get("machine_translation") or submission.get("draft", "")
     st.success("MT baseline locked. The editable post-edit field is now active.")
-    st.text_area("Locked MT baseline", mt_draft, height=200, disabled=True, key=f"locked_mt_{submission_id}")
-    post_edit = st.text_area(
+    _localized_text_area(
+        "Locked MT baseline",
+        mt_draft,
+        language=_target_language(text_item["direction"]),
+        height=200,
+        disabled=True,
+        key=f"locked_mt_{submission_id}",
+    )
+    post_edit = _localized_text_area(
         "Your post-edited translation",
         value=submission.get("post_edit_translation") or submission.get("final_translation", ""),
+        language=_target_language(text_item["direction"]),
         height=240,
         key=f"post_edit_editor_{submission_id}",
     )
@@ -652,8 +776,22 @@ def render_peer_review(learner_id: int) -> None:
     selected = st.selectbox("Select an anonymised submission", labels)
     submission = submissions[labels.index(selected)]
     st.markdown(f"**{submission['title']}** — {submission['author']} ({submission['direction']})")
-    st.text_area("Source text", submission["source_text"], height=160, disabled=True, key=f"peer_source_{submission['id']}")
-    st.text_area("Student translation", submission["final_translation"], height=200, disabled=True, key=f"peer_final_{submission['id']}")
+    _localized_text_area(
+        "Source text",
+        submission["source_text"],
+        language=submission["language"],
+        height=160,
+        disabled=True,
+        key=f"peer_source_{submission['id']}",
+    )
+    _localized_text_area(
+        "Student translation",
+        submission["final_translation"],
+        language=_target_language(submission["direction"]),
+        height=200,
+        disabled=True,
+        key=f"peer_final_{submission['id']}",
+    )
     with st.form(f"peer_review_{submission['id']}_{learner_id}"):
         fidelity = st.slider("Fidelity to meaning", 1, 5, 3)
         style = st.slider("Literary style and voice", 1, 5, 3)
@@ -706,6 +844,23 @@ def render_my_progress(learner_id: int) -> None:
 
 def render_instructor_dashboard() -> None:
     st.header("Instructor Dashboard")
+    roster = list_learners(DB_PATH)
+    if roster:
+        st.subheader("Student roster")
+        roster_frame = pd.DataFrame(
+            [
+                {
+                    "student name": row.get("full_name") or "Not provided",
+                    "student ID": row.get("student_id") or "Not provided",
+                    "research ID": row.get("pseudonym") or "—",
+                    "submissions": row.get("submission_count", 0),
+                    "last activity": row.get("last_activity") or "—",
+                }
+                for row in roster
+            ]
+        )
+        st.dataframe(roster_frame, use_container_width=True, hide_index=True)
+
     submissions = list_all_submissions(db_path=DB_PATH)
     all_texts = list_texts(db_path=DB_PATH)
     col1, col2, col3, col4 = st.columns(4)
@@ -724,7 +879,9 @@ def render_instructor_dashboard() -> None:
         rows.append(
             {
                 "submission": item["id"],
-                "student": item["pseudonym"],
+                "student name": item.get("full_name") or "Not provided",
+                "student ID": item.get("student_id") or "Not provided",
+                "research ID": item.get("pseudonym") or "—",
                 "week": item.get("week"),
                 "text": item["title"],
                 "workflow": item.get("workflow_mode", "Original translation"),
@@ -763,13 +920,18 @@ def render_text_importer() -> None:
             themes = st.text_input("Themes or translation challenges")
             rights = st.text_input("Rights/provenance note", value="Instructor-provided authorised excerpt")
             source_url = st.text_input("Source or bibliographic URL")
-            reference_translation = st.text_area(
+            reference_translation = _localized_text_area(
                 "Reference translation (optional)",
+                language=_target_language(direction),
                 height=120,
                 help="Use only an authorised reference translation. It is kept separate from the student's work for comparison.",
             )
             text_upload = st.file_uploader("Upload .txt or .docx (optional)", type=["txt", "docx"])
-            text_body = st.text_area("Authentic text or excerpt", height=220)
+            text_body = _localized_text_area(
+                "Authentic text or excerpt",
+                language=language,
+                height=220,
+            )
             submitted = st.form_submit_button("Add to authentic library")
             if submitted:
                 content = _read_uploaded_text(text_upload) or text_body
@@ -820,10 +982,23 @@ def render_text_importer() -> None:
                 st.error(f"Could not read the CSV: {exc}")
 
 
-def _submission_selector(submissions: list[dict[str, Any]], key: str) -> dict[str, Any] | None:
+def _submission_selector(
+    submissions: list[dict[str, Any]],
+    key: str,
+    *,
+    show_identity: bool = False,
+) -> dict[str, Any] | None:
     if not submissions:
         return None
-    labels = [f"Submission #{row['id']} · Week {row.get('week') or '—'} · {row['title']}" for row in submissions]
+    labels = []
+    for row in submissions:
+        identity = ""
+        if show_identity:
+            identity = (
+                f" · {row.get('full_name') or 'Name not provided'}"
+                f" · ID: {row.get('student_id') or 'Not provided'}"
+            )
+        labels.append(f"Submission #{row['id']} · Week {row.get('week') or '—'} · {row['title']}{identity}")
     selected = st.selectbox("Select submission", labels, key=key)
     return submissions[labels.index(selected)]
 
@@ -831,21 +1006,53 @@ def _submission_selector(submissions: list[dict[str, Any]], key: str) -> dict[st
 def render_assessment() -> None:
     st.header("Assessment and Expert Review")
     submissions = list_all_submissions(status="submitted", db_path=DB_PATH)
-    submission = _submission_selector(submissions, "assessment_submission")
+    submission = _submission_selector(submissions, "assessment_submission", show_identity=True)
     if submission is None:
         st.info("No submitted translations are available for assessment.")
         return
-    st.caption(f"Blinded workflow record: Submission #{submission['id']}")
+    st.caption(
+        f"Student: {submission.get('full_name') or 'Name not provided'} · "
+        f"Student ID: {submission.get('student_id') or 'Not provided'} · "
+        f"Research ID: {submission.get('pseudonym') or '—'}"
+    )
     st.markdown(
         f"**Source:** {submission['title']} — {submission['author']} ({submission['direction']})  \n"
         f"**Workflow:** {submission.get('workflow_mode', 'Original translation')}"
     )
-    st.text_area("Source text", submission["source_text"], height=160, disabled=True, key=f"assessment_source_{submission['id']}")
+    _localized_text_area(
+        "Source text",
+        submission["source_text"],
+        language=submission["language"],
+        height=160,
+        disabled=True,
+        key=f"assessment_source_{submission['id']}",
+    )
     if submission.get("machine_translation"):
-        st.text_area("Machine-translation baseline", submission["machine_translation"], height=160, disabled=True, key=f"assessment_mt_{submission['id']}")
+        _localized_text_area(
+            "Machine-translation baseline",
+            submission["machine_translation"],
+            language=_target_language(submission["direction"]),
+            height=160,
+            disabled=True,
+            key=f"assessment_mt_{submission['id']}",
+        )
     if submission.get("post_edit_translation"):
-        st.text_area("Post-edited translation", submission["post_edit_translation"], height=180, disabled=True, key=f"assessment_postedit_{submission['id']}")
-    st.text_area("Student final translation", submission["final_translation"], height=200, disabled=True, key=f"assessment_final_{submission['id']}")
+        _localized_text_area(
+            "Post-edited translation",
+            submission["post_edit_translation"],
+            language=_target_language(submission["direction"]),
+            height=180,
+            disabled=True,
+            key=f"assessment_postedit_{submission['id']}",
+        )
+    _localized_text_area(
+        "Student final translation",
+        submission["final_translation"],
+        language=_target_language(submission["direction"]),
+        height=200,
+        disabled=True,
+        key=f"assessment_final_{submission['id']}",
+    )
     st.text_area("Translator's commentary", submission["commentary"], height=150, disabled=True, key=f"assessment_commentary_{submission['id']}")
     with st.form(f"teacher_review_form_{submission['id']}"):
         reviewer_label = st.text_input("Reviewer label", value="reviewer-1")
@@ -965,7 +1172,7 @@ def render_research_dashboard() -> None:
         st.caption("At least two raters must score at least two common submissions for this estimate.")
 
 
-def render_research_exports() -> None:
+def render_research_exports(*, show_identity: bool = False) -> None:
     st.header("Research Exports")
     st.write(
         "Download pseudonymous tables containing text provenance, drafts, final translations, annotations, AI comparisons, peer reviews, teacher ratings, and event logs."
@@ -977,7 +1184,7 @@ def render_research_exports() -> None:
         mime="application/zip",
     )
     submissions = list_all_submissions(db_path=DB_PATH)
-    selected = _submission_selector(submissions, "export_submission")
+    selected = _submission_selector(submissions, "export_submission", show_identity=show_identity)
     if selected:
         st.download_button(
             "Download selected submission as Word",
@@ -1000,7 +1207,10 @@ def main() -> None:
     role, learner_id, authorized = _authenticated_sidebar()
     if not authorized:
         st.markdown('<div class="main-title">Literary Translation Studio</div>', unsafe_allow_html=True)
-        st.info("Choose Student mode, or enter the configured instructor/research password.")
+        if role == "Student":
+            st.info("Enter your Student name and Student ID in the sidebar to enter the student workspace.")
+        else:
+            st.info("Choose Student mode, or enter the configured instructor/research password.")
         return
     page = _sidebar_navigation(role)
     if role == "Student" and learner_id is not None:
@@ -1028,7 +1238,7 @@ def main() -> None:
         elif page == "Assessment":
             render_assessment()
         elif page == "Research & Exports":
-            render_research_exports()
+            render_research_exports(show_identity=True)
     elif role == "Research":
         if page == "Research Dashboard":
             render_research_dashboard()

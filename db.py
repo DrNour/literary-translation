@@ -40,6 +40,8 @@ def init_db(db_path: str | None = None) -> None:
             CREATE TABLE IF NOT EXISTS learners (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 pseudonym TEXT NOT NULL UNIQUE,
+                full_name TEXT NOT NULL DEFAULT '',
+                student_id TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL
             );
 
@@ -152,7 +154,15 @@ def init_db(db_path: str | None = None) -> None:
 
 
 def _migrate_existing_schema(connection: sqlite3.Connection) -> None:
-    """Add the workflow fields while preserving databases created by v1."""
+    """Add newer fields while preserving databases created by earlier versions."""
+
+    learner_columns = {row[1] for row in connection.execute("PRAGMA table_info(learners)").fetchall()}
+    for column, definition in {
+        "full_name": "TEXT NOT NULL DEFAULT ''",
+        "student_id": "TEXT NOT NULL DEFAULT ''",
+    }.items():
+        if column not in learner_columns:
+            connection.execute(f"ALTER TABLE learners ADD COLUMN {column} {definition}")
 
     text_columns = {row[1] for row in connection.execute("PRAGMA table_info(texts)").fetchall()}
     if "reference_translation" not in text_columns:
@@ -248,12 +258,32 @@ def _rows(cursor: sqlite3.Cursor) -> list[dict[str, Any]]:
     return [dict(row) for row in cursor.fetchall()]
 
 
-def get_or_create_learner(pseudonym: str, db_path: str | None = None) -> int:
+def get_or_create_learner(
+    pseudonym: str,
+    db_path: str | None = None,
+    *,
+    full_name: str = "",
+    student_id: str = "",
+) -> int:
     clean = pseudonym.strip() or "student-001"
+    clean_name = full_name.strip()
+    clean_student_id = student_id.strip()
     with connect(db_path) as connection:
         connection.execute(
-            "INSERT OR IGNORE INTO learners (pseudonym, created_at) VALUES (?, ?)",
-            (clean, now_iso()),
+            """
+            INSERT OR IGNORE INTO learners (pseudonym, full_name, student_id, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (clean, clean_name, clean_student_id, now_iso()),
+        )
+        connection.execute(
+            """
+            UPDATE learners
+            SET full_name = CASE WHEN ? <> '' THEN ? ELSE full_name END,
+                student_id = CASE WHEN ? <> '' THEN ? ELSE student_id END
+            WHERE pseudonym = ?
+            """,
+            (clean_name, clean_name, clean_student_id, clean_student_id, clean),
         )
         row = connection.execute("SELECT id FROM learners WHERE pseudonym = ?", (clean,)).fetchone()
         return int(row["id"])
@@ -578,7 +608,7 @@ def list_student_submissions(learner_id: int, db_path: str | None = None) -> lis
                 """
                 SELECT s.*, t.title, t.author, t.week, t.language, t.direction, t.genre, t.text AS source_text,
                        t.reference_translation AS text_reference_translation,
-                       l.pseudonym
+                       l.pseudonym, l.full_name, l.student_id
                 FROM submissions s
                 JOIN texts t ON t.id = s.text_id
                 JOIN learners l ON l.id = s.learner_id
@@ -595,7 +625,7 @@ def list_all_submissions(status: str | None = None, db_path: str | None = None) 
         query = """
             SELECT s.*, t.title, t.author, t.week, t.language, t.direction, t.genre, t.text AS source_text,
                    t.reference_translation AS text_reference_translation,
-                   l.pseudonym
+                   l.pseudonym, l.full_name, l.student_id
             FROM submissions s
             JOIN texts t ON t.id = s.text_id
             JOIN learners l ON l.id = s.learner_id
@@ -606,6 +636,25 @@ def list_all_submissions(status: str | None = None, db_path: str | None = None) 
             params.append(status)
         query += " ORDER BY COALESCE(t.week, 99), s.updated_at DESC"
         return _rows(connection.execute(query, params))
+
+
+def list_learners(db_path: str | None = None) -> list[dict[str, Any]]:
+    """Return the instructor-facing roster, including identifiable fields."""
+
+    with connect(db_path) as connection:
+        return _rows(
+            connection.execute(
+                """
+                SELECT l.id, l.full_name, l.student_id, l.pseudonym, l.created_at,
+                       COUNT(s.id) AS submission_count,
+                       MAX(s.updated_at) AS last_activity
+                FROM learners l
+                LEFT JOIN submissions s ON s.learner_id = l.id
+                GROUP BY l.id
+                ORDER BY COALESCE(NULLIF(l.full_name, ''), l.pseudonym), l.id
+                """
+            )
+        )
 
 
 def save_peer_review(
